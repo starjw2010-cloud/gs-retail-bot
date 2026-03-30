@@ -239,11 +239,11 @@ def handle_message(event, say, set_status, client):
                 except Exception:
                     pass
                 from scenarios import create_canvas
-                from datetime import datetime as _dt
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
                 has_canvas = any(k in user_message for k in ["캔버스", "canvas", "리포트로", "문서로"])
                 if has_canvas:
                     md = generate_audit_report_markdown(days=7)
-                    title = f"감사 리포트 - {_dt.now().strftime('%m/%d %H:%M')}"
+                    title = f"감사 리포트 - {_dt.now(_tz(_td(hours=9))).strftime('%m/%d %H:%M')}"
                     canvas_result = create_canvas(client, channel, md, title)
                     # create_canvas가 이미 메시지를 보냄 — 에러일 때만 say
                     if not canvas_result.startswith("http"):
@@ -460,8 +460,8 @@ def handle_audit_command(ack, command, say, client):
             if sub_command in ["canvas", "캔버스", "리포트", "report"]:
                 from scenarios import create_canvas
                 md = generate_audit_report_markdown(days=7)
-                from datetime import datetime as _dt
-                title = f"감사 리포트 - {_dt.now().strftime('%m/%d %H:%M')}"
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                title = f"감사 리포트 - {_dt.now(_tz(_td(hours=9))).strftime('%m/%d %H:%M')}"
                 canvas_result = create_canvas(client, command.get("channel_id"), md, title)
                 # create_canvas가 이미 채널에 메시지를 보냄 — say() 안 함
                 if not canvas_result.startswith("http"):
