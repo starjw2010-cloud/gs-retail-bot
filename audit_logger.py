@@ -14,10 +14,13 @@ import time
 import sqlite3
 import logging
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 logger = logging.getLogger("audit_logger")
+
+# KST 타임존
+KST = timezone(timedelta(hours=9))
 
 # ─────────────────────────────────────────────
 # 설정
@@ -130,7 +133,7 @@ def _log_event(event_type, user_id=None, channel_id=None, intent=None, details=N
             conn = _get_conn()
             conn.execute(
                 "INSERT INTO audit_events (timestamp, event_type, user_id, channel_id, intent, details, severity) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (datetime.utcnow().isoformat(), event_type, user_id, channel_id, intent, json.dumps(details or {}, ensure_ascii=False), severity),
+                (datetime.now(KST).isoformat(), event_type, user_id, channel_id, intent, json.dumps(details or {}, ensure_ascii=False), severity),
             )
             conn.commit()
             conn.close()
@@ -146,7 +149,7 @@ def log_llm_call(user_id=None, model=None, input_tokens=0, output_tokens=0, late
             conn = _get_conn()
             conn.execute(
                 "INSERT INTO llm_calls (timestamp, user_id, model, input_tokens, output_tokens, total_tokens, latency_ms, intent, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (datetime.utcnow().isoformat(), user_id, model, input_tokens, output_tokens, total, latency_ms, intent, error),
+                (datetime.now(KST).isoformat(), user_id, model, input_tokens, output_tokens, total, latency_ms, intent, error),
             )
             conn.commit()
             conn.close()
@@ -165,7 +168,7 @@ def log_api_call(user_id=None, service=None, endpoint=None, status_code=None, la
             conn = _get_conn()
             conn.execute(
                 "INSERT INTO api_calls (timestamp, user_id, service, endpoint, status_code, latency_ms, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (datetime.utcnow().isoformat(), user_id, service, endpoint, status_code, latency_ms, error),
+                (datetime.now(KST).isoformat(), user_id, service, endpoint, status_code, latency_ms, error),
             )
             conn.commit()
             conn.close()
@@ -340,9 +343,7 @@ def _check_rate_limit(user_id):
 
 def _check_off_hours(user_id, event_type):
     """심야 시간대 사용 감지"""
-    hour = datetime.utcnow().hour + 9  # KST 변환 (단순)
-    if hour >= 24:
-        hour -= 24
+    hour = datetime.now(KST).hour
 
     if hour >= OFF_HOURS_START or hour < OFF_HOURS_END:
         _log_event(
@@ -356,7 +357,7 @@ def _check_off_hours(user_id, event_type):
 def _check_daily_token_limit(user_id):
     """일일 토큰 사용량 임계치 초과 체크"""
     try:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
+        today = datetime.now(KST).strftime("%Y-%m-%d")
         with _db_lock:
             conn = _get_conn()
             row = conn.execute(
@@ -389,7 +390,7 @@ def _create_security_alert(alert_type, severity, user_id=None, channel_id=None, 
             conn = _get_conn()
             conn.execute(
                 "INSERT INTO security_alerts (timestamp, alert_type, severity, user_id, channel_id, description, raw_data) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (datetime.utcnow().isoformat(), alert_type, severity, user_id, channel_id, description, json.dumps(raw_data or {}, ensure_ascii=False)),
+                (datetime.now(KST).isoformat(), alert_type, severity, user_id, channel_id, description, json.dumps(raw_data or {}, ensure_ascii=False)),
             )
             conn.commit()
             conn.close()
@@ -472,7 +473,7 @@ def poll_audit_logs_api(org_token, app_ids=None):
         client = AuditLogsClient(token=org_token)
 
         # 최근 10분 이벤트
-        oldest = int((datetime.utcnow() - timedelta(minutes=10)).timestamp())
+        oldest = int((datetime.now(KST) - timedelta(minutes=10)).timestamp())
 
         # 앱 관련 위험 액션 필터
         dangerous_actions = [
@@ -541,7 +542,7 @@ def poll_audit_logs_api(org_token, app_ids=None):
 
 def get_usage_stats(days=7):
     """최근 N일 사용 통계"""
-    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    since = (datetime.now(KST) - timedelta(days=days)).isoformat()
     stats = {}
 
     try:
@@ -635,8 +636,8 @@ def get_audit_dashboard_blocks(days=7):
 def generate_audit_report_markdown(days=7, slack_client=None):
     """감사 리포트를 Canvas 마크다운으로 생성 (상세 버전)"""
     stats = get_usage_stats(days)
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    since = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    today = datetime.now(KST).strftime("%Y-%m-%d")
+    since = (datetime.now(KST) - timedelta(days=days)).isoformat()
 
     # 사용자 이름 변환 헬퍼
     _user_cache = {}
@@ -729,15 +730,8 @@ def generate_audit_report_markdown(days=7, slack_client=None):
                     if not text_preview or len(text_preview) < 2:
                         continue
                     ts = r["timestamp"][:19].replace("T", " ")
-                    try:
-                        h = int(ts[11:13]) + 9
-                        if h >= 24:
-                            h -= 24
-                        ts_kst = f"{ts[:11]}{h:02d}{ts[13:]}"
-                    except Exception:
-                        ts_kst = ts
                     name = _resolve_user(r["user_id"])
-                    lines.append(f"- [{ts_kst}] {name}: {text_preview}")
+                    lines.append(f"- [{ts}] {name}: {text_preview}")
                 except Exception:
                     continue
     except Exception:
@@ -756,9 +750,7 @@ def generate_audit_report_markdown(days=7, slack_client=None):
             hour_counts = defaultdict(int)
             for r in rows:
                 try:
-                    h = int(r["timestamp"][11:13]) + 9  # UTC → KST
-                    if h >= 24:
-                        h -= 24
+                    h = int(r["timestamp"][11:13])  # 이미 KST
                     hour_counts[h] += 1
                 except Exception:
                     pass
@@ -833,17 +825,9 @@ def generate_audit_report_markdown(days=7, slack_client=None):
             lines.append("\n**개별 알림 내역**")
             for r in rows:
                 ts = r["timestamp"][:19].replace("T", " ")
-                # UTC → KST 간단 변환
-                try:
-                    h = int(ts[11:13]) + 9
-                    if h >= 24:
-                        h -= 24
-                    ts_kst = f"{ts[:11]}{h:02d}{ts[13:]}"
-                except Exception:
-                    ts_kst = ts
                 name = _resolve_user(r["user_id"])
                 emoji = {"critical": "🚨", "warning": "⚠️", "info": "ℹ️"}.get(r["severity"], "")
-                lines.append(f"- {emoji} [{ts_kst}] {r['description']} (사용자: {name})")
+                lines.append(f"- {emoji} [{ts}] {r['description']} (사용자: {name})")
         else:
             lines.append("✅ 이상 없음 — 보안 알림이 발생하지 않았습니다.")
     except Exception:
