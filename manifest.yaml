@@ -1,0 +1,70 @@
+display_information:
+  name: GS Retail AI Agent
+  description: Promotion Manager + OFC Smart Assistant
+  background_color: "#1a73e8"
+
+features:
+  app_home:
+    home_tab_enabled: true
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: GS Retail AI
+    always_online: true
+  assistant:
+    name: GS Retail AI
+    display_name: GS Retail AI
+    suggested_prompts:
+      - title: This week promotions
+        message: Show all promotions this week
+      - title: Store status
+        message: Summarize store status
+      - title: Manual search
+        message: Tell me about expired product disposal
+      - title: Daily briefing
+        message: Give me today's briefing
+  slash_commands:
+    - command: /promo
+      description: Search promotions
+      usage_hint: "[category or keyword]"
+      should_escape: false
+    - command: /manual
+      description: Search operation manual
+      usage_hint: "[keyword]"
+      should_escape: false
+    - command: /store
+      description: Check store status
+      usage_hint: "[store name or empty for all]"
+      should_escape: false
+    - command: /briefing
+      description: Get integrated briefing
+      should_escape: false
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - assistant:write
+      - channels:history
+      - channels:read
+      - chat:write
+      - commands
+      - groups:history
+      - groups:read
+      - im:history
+      - im:read
+      - im:write
+      - users:read
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_home_opened
+      - app_mention
+      - assistant_thread_started
+      - message.im
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
