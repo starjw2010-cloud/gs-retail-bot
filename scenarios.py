@@ -311,7 +311,9 @@ def detect_intent(user_message):
         return "orchestration_briefing"
     if any(k in msg for k in ["주간 리포트", "주간 보고", "위클리 리포트", "이번 주 리포트"]):
         return "orchestration_weekly"
-    if any(k in msg for k in ["멀티 분석", "종합 분석", "통합 분석", "에이전트 분석", "전체 분석"]):
+    # 띄어쓰기 무관 감지를 위해 공백 제거 후 비교
+    msg_no_space = msg.replace(" ", "")
+    if any(k in msg_no_space for k in ["멀티분석", "종합분석", "통합분석", "에이전트분석", "전체분석"]):
         return "multi_agent_analysis"
     if any(k in msg for k in canvas_keywords):
         return "canvas_create"
@@ -328,8 +330,8 @@ def detect_intent(user_message):
         return "store_promo_analysis"
 
     # 분석 키워드가 있으면 AI 분석 우선 (지역+분석 = AI 분석)
-    region_with_analysis = ["어떻게 하면", "어떻게", "심각", "개선", "해결", "방안", "대책", "왜 이렇게", "원인"]
-    if _region_mentioned(user_message) and any(k in msg for k in region_with_analysis):
+    region_with_analysis = ["어떻게하면", "어떻게", "심각", "개선", "해결", "방안", "대책", "왜이렇게", "원인", "적용", "전파", "인사이트", "바탕으로", "활용", "벤치마킹", "참고", "도입"]
+    if _region_mentioned(user_message) and any(k in msg_no_space for k in region_with_analysis):
         return "ai_analysis"
 
     region_store_triggers = ["점포", "매장", "현황", "지역", "권역", "몇 개", "어때"]
