@@ -276,12 +276,23 @@ DLP_PATTERNS = {
 
 # 프롬프트 인젝션 패턴
 PROMPT_INJECTION_PATTERNS = [
+    # 영어
     re.compile(r"(?i)ignore\s+(previous|all|above|prior)\s+(instructions?|prompts?|rules?)"),
     re.compile(r"(?i)you\s+are\s+now\s+(?:a|an|the)"),
     re.compile(r"(?i)(?:system|developer)\s*(?:prompt|message|instruction)"),
     re.compile(r"(?i)(?:pretend|act)\s+(?:to\s+be|as\s+if|like)"),
     re.compile(r"(?i)(?:reveal|show|print|output)\s+(?:your|the)\s+(?:system|initial|original)\s+(?:prompt|instruction)"),
     re.compile(r"(?i)DAN\s+mode|jailbreak|bypass\s+(?:filter|restriction|safety)"),
+    # 한국어
+    re.compile(r"(?:이전|기존|위의|앞의)\s*(?:지시|명령|프롬프트|규칙|지침).*(?:무시|잊어|취소|삭제)"),
+    re.compile(r"(?:무시|잊어|취소|삭제).*(?:이전|기존|위의|앞의)\s*(?:지시|명령|프롬프트|규칙|지침)"),
+    re.compile(r"너는\s*(?:이제|지금)\s*(?:해커|관리자|어드민|루트)"),
+    re.compile(r"(?:시스템|개발자|원본|초기)\s*(?:프롬프트|지시|명령|설정).*(?:보여|알려|출력|공개)"),
+    re.compile(r"(?:보여|알려|출력|공개).*(?:시스템|개발자|원본|초기)\s*(?:프롬프트|지시|명령|설정)"),
+    re.compile(r"(?:관리자|어드민|루트)\s*(?:권한|모드).*(?:전환|변경|활성)"),
+    re.compile(r"(?:안전|보안|필터|제한).*(?:해제|끄|비활성|무시|우회)"),
+    re.compile(r"(?:제한|필터|규칙)\s*(?:없이|무시하고|해제하고)"),
+    re.compile(r"(?:원본|원래|모든)\s*데이터.*(?:보여|줘|출력|공개)"),
 ]
 
 
