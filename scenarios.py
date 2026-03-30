@@ -7,9 +7,11 @@ scenarios.py — GS Retail AI Agent 시나리오 실행 모듈
 import os
 import re
 import json
+import time as _time  # ← 추가
 from datetime import datetime
 from openai import OpenAI
 from dotenv import load_dotenv
+from audit_logger import log_llm_call  # ← 추가
 from mock_data import (
     get_active_promotions, get_upcoming_promotions, get_ending_soon,
     get_starting_soon, search_promotion, get_promo_by_category,
@@ -33,6 +35,7 @@ _llm_client = OpenAI(
 )
 
 def _call_llm(system_prompt, user_message, temperature=0.3):
+    start = _time.time()  # ← 추가
     try:
         response = _llm_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -43,8 +46,22 @@ def _call_llm(system_prompt, user_message, temperature=0.3):
             temperature=temperature,
             max_tokens=2000,
         )
-        return response.choices[0].message.content
+        elapsed_ms = int((_time.time() - start) * 1000)  # ← 추가
+        content = response.choices[0].message.content
+
+        # ── 감사 로그 ── ← 추가 (이 4줄)
+        usage = response.usage
+        log_llm_call(
+            model="llama-3.3-70b",
+            input_tokens=getattr(usage, "prompt_tokens", 0),
+            output_tokens=getattr(usage, "completion_tokens", 0),
+            latency_ms=elapsed_ms,
+        )
+
+        return content
     except Exception as e:
+        elapsed_ms = int((_time.time() - start) * 1000)  # ← 추가
+        log_llm_call(model="llama-3.3-70b", error=str(e), latency_ms=elapsed_ms)  # ← 추가
         error_msg = str(e)
         if "429" in error_msg or "rate" in error_msg.lower():
             return "⏳ 잠시 후 다시 시도해주세요. (API 호출 한도 초과)"

@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from scenarios import route_and_execute, detect_intent
+from audit_logger import audit_middleware, log_llm_call, get_audit_dashboard_blocks, send_security_alerts, generate_audit_report_markdown, get_usage_stats  # ← 추가
 
 # ─────────────────────────────────────────────
 # 환경 설정
@@ -23,6 +24,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 app = App(token=os.environ.get("SLACK_BOT_TOKEN"))
+app.use(audit_middleware)  # ← 추가: 모든 이벤트 자동 감사 로그
 _BOT_USER_ID = None
 
 
@@ -227,6 +229,45 @@ def handle_message(event, say, set_status, client):
 
     def process():
         try:
+            # 감사 리포트 요청 감지 (관리자 전용) ← 추가
+            audit_keywords = ["감사 리포트", "감사 로그", "audit report", "감사리포트", "감사로그"]
+            user_id = event.get("user", "")
+            admin_id = os.environ.get("AUDIT_ADMIN_USER_ID", "")
+            if user_id == admin_id and any(k in user_message for k in audit_keywords):
+                try:
+                    set_status("📊 감사 리포트 생성 중...")
+                except Exception:
+                    pass
+                from scenarios import create_canvas
+                from datetime import datetime as _dt
+                has_canvas = any(k in user_message for k in ["캔버스", "canvas", "리포트로", "문서로"])
+                if has_canvas:
+                    md = generate_audit_report_markdown(days=7)
+                    title = f"감사 리포트 - {_dt.now().strftime('%m/%d %H:%M')}"
+                    canvas_result = create_canvas(client, channel, md, title)
+                    # create_canvas가 이미 메시지를 보냄 — 에러일 때만 say
+                    if not canvas_result.startswith("http"):
+                        say(text=canvas_result, thread_ts=thread_ts)
+                else:
+                    stats = get_usage_stats(days=7)
+                    top_users = "\n".join([f"  → <@{u['user_id']}> — {u['count']}건" for u in stats.get("top_users", [])[:5]])
+                    alerts = stats.get("alerts_by_severity", {})
+                    alert_text = "이상 없음 ✅" if not alerts else "  ".join([f"{sev}: {cnt}건" for sev, cnt in alerts.items()])
+                    say(text=(
+                        f"📊 *감사 로그 요약* (최근 7일)\n\n"
+                        f"→ 총 요청: *{stats.get('total_requests', 0):,}건*\n"
+                        f"→ LLM 토큰: *{stats.get('total_tokens', 0):,}*\n"
+                        f"→ 평균 응답: *{stats.get('avg_llm_latency_ms', 0):,}ms*\n\n"
+                        f"*👤 활발한 사용자*\n{top_users}\n\n"
+                        f"*🔒 보안 알림*\n→ {alert_text}\n\n"
+                        f"💡 \"감사 리포트 캔버스로\" 라고 하면 Canvas로 생성해요!"
+                    ), thread_ts=thread_ts)
+                try:
+                    set_status("")
+                except Exception:
+                    pass
+                return
+
             # 인텐트 감지 → 상태 표시
             intent = detect_intent(user_message)
             status_text = STATUS_MAP.get(intent, "💬 처리 중...")
@@ -399,119 +440,192 @@ def handle_briefing_command(ack, command, say):
     threading.Thread(target=process, daemon=True).start()
 
 
+@app.command("/audit")
+def handle_audit_command(ack, command, say, client):
+    """감사 로그 조회 슬래시 커맨드 (관리자 전용)"""
+    ack()
+    user_id = command.get("user_id", "")
+    admin_id = os.environ.get("AUDIT_ADMIN_USER_ID", "")
+
+    # 관리자만 사용 가능
+    if user_id != admin_id:
+        say(text="🔒 감사 로그는 관리자만 조회할 수 있습니다.")
+        return
+
+    sub_command = command.get("text", "").strip().lower()
+
+    def process():
+        try:
+            # /audit canvas → Canvas 리포트 생성
+            if sub_command in ["canvas", "캔버스", "리포트", "report"]:
+                from scenarios import create_canvas
+                md = generate_audit_report_markdown(days=7)
+                from datetime import datetime as _dt
+                title = f"감사 리포트 - {_dt.now().strftime('%m/%d %H:%M')}"
+                canvas_result = create_canvas(client, command.get("channel_id"), md, title)
+                # create_canvas가 이미 채널에 메시지를 보냄 — say() 안 함
+                if not canvas_result.startswith("http"):
+                    say(text=canvas_result)  # 에러일 때만 say
+                return
+
+            # /audit (기본) → 통계 요약
+            stats = get_usage_stats(days=7)
+            top_users_lines = ""
+            for u in stats.get("top_users", [])[:5]:
+                top_users_lines += f"\n  → <@{u['user_id']}> — {u['count']}건"
+
+            alerts = stats.get("alerts_by_severity", {})
+            alert_text = "이상 없음 ✅" if not alerts else "  ".join([f"{sev}: {cnt}건" for sev, cnt in alerts.items()])
+
+            intent_lines = ""
+            for i in stats.get("intent_distribution", [])[:7]:
+                intent_lines += f"\n  → {i['intent']}: {i['count']}건"
+
+            text = (
+                f"📊 *감사 로그 요약* (최근 7일)\n\n"
+                f"*📈 사용 현황*\n"
+                f"→ 총 요청: *{stats.get('total_requests', 0):,}건*\n"
+                f"→ LLM 토큰: *{stats.get('total_tokens', 0):,}*\n"
+                f"→ 평균 응답: *{stats.get('avg_llm_latency_ms', 0):,}ms*\n\n"
+                f"*👤 활발한 사용자*{top_users_lines}\n\n"
+                f"*🎯 인텐트 분포*{intent_lines}\n\n"
+                f"*🔒 보안 알림*\n→ {alert_text}\n\n"
+                f"💡 Canvas 리포트: `/audit canvas`"
+            )
+            say(text=text)
+
+        except Exception as e:
+            logger.error(f"/audit 처리 오류: {e}")
+            say(text="❌ 감사 로그 조회 중 오류가 발생했습니다.")
+
+    threading.Thread(target=process, daemon=True).start()
+
+
 # ─────────────────────────────────────────────
-# App Home 탭
+# App Home 탭 — 기존 대시보드 + 감사 로그 대시보드
 # ─────────────────────────────────────────────
 
 @app.event("app_home_opened")
 def handle_app_home(event, client):
-    """App Home 탭 — 대시보드"""
+    """App Home 탭 — 대시보드 + 감사 로그"""
     user_id = event["user"]
     try:
+        # 기존 메인 블록
+        main_blocks = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "🏪 GS Retail AI 어시스턴트"}
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "프로모션 조회 · 매뉴얼 검색 · 점포 현황 확인\n"
+                        "DM으로 대화하거나, 채널에서 @멘션 해주세요!"
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*📦 프로모션 매니저*\n"
+                        "→ 진행/예정/종료 행사 조회, 카테고리별 검색, 상품 검색\n"
+                        "→ 예: \"음료 행사\", \"콜라 행사 중이야?\", \"곧 끝나는 행사\""
+                    ),
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*🏪 점포 현황 (1,500개 점포)*\n"
+                        "→ 서울/강남/역삼 (시→구→동네 계층 검색)\n"
+                        "→ 전라도/경상도 (도 단위), 수도권/영남권 (권역)\n"
+                        "→ 매출 상위/하위, 폐기율, 퀵커머스, 이슈 점포"
+                    ),
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*📖 매뉴얼 검색*\n"
+                        "→ 유통기한, 폐기, 위생, 계약, 퀵커머스 등 20개 매뉴얼\n"
+                        "→ 예: \"유통기한 지난 상품 어떻게 처리해?\""
+                    ),
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*🧠 AI 분석 & 브리핑*\n"
+                        "→ 점포 전략, 지역 비교, 프로모션 연관 분석\n"
+                        "→ 오늘 방문 브리핑, 주간 리포트"
+                    ),
+                },
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*📋 Canvas 리포트*\n"
+                        "→ \"캔버스로 만들어줘\" — 바로 위 답변을 Canvas로\n"
+                        "→ \"전체 대화 캔버스로\" — 모든 답변을 Canvas로\n"
+                        "→ \"요약해서 캔버스로\" — AI 요약 Canvas\n"
+                        "→ \"강남과 부산 캔버스로\" — 여러 지역 통합 Canvas"
+                    ),
+                },
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*슬래시 커맨드*\n"
+                        "• `/promo` — 프로모션 조회\n"
+                        "• `/manual 검색어` — 매뉴얼 검색\n"
+                        "• `/store` — 점포 현황\n"
+                        "• `/briefing` — 통합 브리핑"
+                    ),
+                },
+            },
+        ]
+
+        # ── 감사 로그 대시보드 (관리자만 표시) ── ← 추가
+        admin_user_id = os.environ.get("AUDIT_ADMIN_USER_ID", "")
+        if user_id == admin_user_id:
+            try:
+                audit_blocks = get_audit_dashboard_blocks(days=7)
+                main_blocks.append({"type": "divider"})
+                main_blocks.extend(audit_blocks)
+            except Exception as e:
+                logger.warning(f"감사 대시보드 로드 실패 (무시): {e}")
+
+        # 푸터
+        main_blocks.append({"type": "divider"})
+        main_blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "GS Retail AI Agent v0.2 | 1,500 점포 · 300 프로모션 · 20 매뉴얼 | Powered by Groq (Llama 3.3 70B)",
+                }
+            ],
+        })
+
         client.views_publish(
             user_id=user_id,
-            view={
-                "type": "home",
-                "blocks": [
-                    {
-                        "type": "header",
-                        "text": {"type": "plain_text", "text": "🏪 GS Retail AI 어시스턴트"}
-                    },
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": (
-                                "프로모션 조회 · 매뉴얼 검색 · 점포 현황 확인\n"
-                                "DM으로 대화하거나, 채널에서 @멘션 해주세요!"
-                            ),
-                        },
-                    },
-                    {"type": "divider"},
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": (
-                                "*📦 프로모션 매니저*\n"
-                                "→ 진행/예정/종료 행사 조회, 카테고리별 검색, 상품 검색\n"
-                                "→ 예: \"음료 행사\", \"콜라 행사 중이야?\", \"곧 끝나는 행사\""
-                            ),
-                        },
-                    },
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": (
-                                "*🏪 점포 현황 (1,500개 점포)*\n"
-                                "→ 서울/강남/역삼 (시→구→동네 계층 검색)\n"
-                                "→ 전라도/경상도 (도 단위), 수도권/영남권 (권역)\n"
-                                "→ 매출 상위/하위, 폐기율, 퀵커머스, 이슈 점포"
-                            ),
-                        },
-                    },
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": (
-                                "*📖 매뉴얼 검색*\n"
-                                "→ 유통기한, 폐기, 위생, 계약, 퀵커머스 등 20개 매뉴얼\n"
-                                "→ 예: \"유통기한 지난 상품 어떻게 처리해?\""
-                            ),
-                        },
-                    },
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": (
-                                "*🧠 AI 분석 & 브리핑*\n"
-                                "→ 점포 전략, 지역 비교, 프로모션 연관 분석\n"
-                                "→ 오늘 방문 브리핑, 주간 리포트"
-                            ),
-                        },
-                    },
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": (
-                                "*📋 Canvas 리포트*\n"
-                                "→ \"캔버스로 만들어줘\" — 바로 위 답변을 Canvas로\n"
-                                "→ \"전체 대화 캔버스로\" — 모든 답변을 Canvas로\n"
-                                "→ \"요약해서 캔버스로\" — AI 요약 Canvas\n"
-                                "→ \"강남과 부산 캔버스로\" — 여러 지역 통합 Canvas"
-                            ),
-                        },
-                    },
-                    {"type": "divider"},
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "mrkdwn",
-                            "text": (
-                                "*슬래시 커맨드*\n"
-                                "• `/promo` — 프로모션 조회\n"
-                                "• `/manual 검색어` — 매뉴얼 검색\n"
-                                "• `/store` — 점포 현황\n"
-                                "• `/briefing` — 통합 브리핑"
-                            ),
-                        },
-                    },
-                    {"type": "divider"},
-                    {
-                        "type": "context",
-                        "elements": [
-                            {
-                                "type": "mrkdwn",
-                                "text": "GS Retail AI Agent v0.2 | 1,500 점포 · 300 프로모션 · 20 매뉴얼 | Powered by Groq (Llama 3.3 70B)",
-                            }
-                        ],
-                    },
-                ],
-            },
+            view={"type": "home", "blocks": main_blocks}
         )
     except Exception as e:
         logger.error(f"App Home 오류: {e}")
@@ -522,6 +636,19 @@ def handle_app_home(event, client):
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # 보안 알림 주기적 발송 (5분 간격) ← 추가
+    def _alert_scheduler():
+        while True:
+            try:
+                send_security_alerts(app.client)
+            except Exception as e:
+                logger.error(f"알림 스케줄러 오류: {e}")
+            time.sleep(300)
+
+    alert_thread = threading.Thread(target=_alert_scheduler, daemon=True)
+    alert_thread.start()
+    logger.info("🔒 보안 알림 스케줄러 시작")
+
     logger.info("🚀 GS Retail AI Agent 시작!")
     handler = SocketModeHandler(app, os.environ.get("SLACK_APP_TOKEN"))
     handler.start()

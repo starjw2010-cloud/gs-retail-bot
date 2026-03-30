@@ -39,6 +39,10 @@ features:
     - command: /briefing
       description: Get integrated briefing
       should_escape: false
+    - command: /audit
+      description: Audit log dashboard (admin only)
+      usage_hint: "[canvas]"
+      should_escape: false
 
 oauth_config:
   scopes:
