@@ -245,7 +245,7 @@ def audit_middleware(body, payload, context, next):
         event_type=event_type,
         user_id=user_id,
         channel_id=channel_id,
-        details={"text_length": len(user_text) if user_text else 0},
+        details={"text_length": len(user_text) if user_text else 0, "text_preview": (user_text[:100] if user_text else "")},
     )
 
     # 다음 미들웨어/핸들러로 전달
@@ -708,6 +708,40 @@ def generate_audit_report_markdown(days=7, slack_client=None):
             lines.append(f"- {i['intent']}: {i['count']}건 ({pct:.1f}%)")
     else:
         lines.append("- 인텐트 기록 없음")
+
+    # ── 최근 사용자 질문 내역 ──
+    try:
+        with _db_lock:
+            conn = _get_conn()
+            rows = conn.execute(
+                "SELECT timestamp, user_id, details FROM audit_events "
+                "WHERE timestamp >= ? AND event_type = 'message' AND details IS NOT NULL "
+                "ORDER BY timestamp DESC LIMIT 30",
+                (since,),
+            ).fetchall()
+            conn.close()
+        if rows:
+            lines += ["", "---", "", "## 💬 최근 사용자 질문 내역"]
+            for r in rows:
+                try:
+                    d = json.loads(r["details"])
+                    text_preview = d.get("text_preview", "")
+                    if not text_preview or len(text_preview) < 2:
+                        continue
+                    ts = r["timestamp"][:19].replace("T", " ")
+                    try:
+                        h = int(ts[11:13]) + 9
+                        if h >= 24:
+                            h -= 24
+                        ts_kst = f"{ts[:11]}{h:02d}{ts[13:]}"
+                    except Exception:
+                        ts_kst = ts
+                    name = _resolve_user(r["user_id"])
+                    lines.append(f"- [{ts_kst}] {name}: {text_preview}")
+                except Exception:
+                    continue
+    except Exception:
+        pass
 
     # ── 시간대별 사용 패턴 ──
     try:
